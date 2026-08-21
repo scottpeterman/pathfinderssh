@@ -112,6 +112,38 @@ func TestFingerprintAcceptsComwaresBenignPagingNotice(t *testing.T) {
 	}
 }
 
+// "no page" disables paging on ArubaOS-CX, confirmed live (2026-08-21) --
+// the same command ArubaOS-Switch uses, apparently carried over as a
+// legacy-compatible alias. This probe originally shipped with no paging
+// step at all on the wrong assumption that ArubaOS-CX had none to offer;
+// there was no end-to-end fingerprint test for this platform before now,
+// only the regex-only classification case in TestClassifyVersions, which
+// would not have caught the difference between "no page" being sent and
+// not being sent at all.
+func TestFingerprintDisablesPagingOnArubaCX(t *testing.T) {
+	cfg := fakedev.Config{
+		Prompt:            "lab-cx1#",
+		AcceptAnyPassword: true,
+		Commands: map[string]string{
+			"no page":     "",
+			"show system": "Vendor             : Aruba\nArubaOS-CX Version : GL.10.13.1050",
+		},
+		Unknown: "% Unrecognized command found at '^' position.",
+	}
+	_, sess := session(t, cfg, netexec.Options{})
+
+	p, err := netexec.Fingerprint(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	if p.Name != "aruba_cx" {
+		t.Errorf("Name = %q, want %q (version output: %q)", p.Name, "aruba_cx", p.VersionOutput)
+	}
+	if p.PagingDisable != "no page" {
+		t.Errorf("PagingDisable = %q, want %q", p.PagingDisable, "no page")
+	}
+}
+
 // A device nobody has a probe for must come back "unknown" with a nil
 // error, not an error. The crawler treats those differently and the
 // distinction has never been exercised against a live session.

@@ -165,31 +165,30 @@ var probes = []probe{
 		},
 	},
 	{
-		// ArubaOS-CX has no documented interactive pager to disable, so
-		// this probe skips the paging step (paging: "") rather than
-		// guess at one and risk misrouting the loop on a rejection.
+		// "no page" is confirmed live (2026-08-21) to disable paging on
+		// ArubaOS-CX -- the same command ArubaOS-Switch (ProVision)
+		// uses, apparently carried over as a legacy-compatible alias.
+		// This was NOT known when this probe was first written: it
+		// originally shipped with no paging step at all, on the
+		// (wrong) assumption that ArubaOS-CX's own documentation
+		// didn't mention a pager toggle because it didn't have one.
+		// That assumption caused a real, live-confirmed hang: probed
+		// against a real ExtremeXOS stack before the extreme_exos
+		// probe above existed, this probe's own "show system" version
+		// command turned out to ALSO be valid EXOS syntax, and with no
+		// paging step to gate against that, it hung the whole
+		// fingerprint attempt on EXOS's "Press <SPACE> to continue"
+		// prompt until the connect timeout. Kept ordered after every
+		// other paging-gated probe regardless, both for that history
+		// and because it must still run before aruba_procurve for the
+		// unrelated reason given in that probe's comment.
+		//
 		// Probed with `show system` rather than `show version`: it is
 		// the command this platform's own docs confirm, and its
 		// "ArubaOS-CX Version" field is unambiguous, whereas
 		// ArubaOS-CX's `show version` output (if any) is unconfirmed
 		// and risks colliding with the "Aruba" match just below.
-		//
-		// Confirmed live (2026-08-21) that this is a real hazard, not a
-		// theoretical one: ExtremeXOS also accepts "show system" as
-		// valid syntax and produces enough output to hit its pager, and
-		// this probe has no paging step to gate against that -- probed
-		// against a real EXOS stack before the extreme_exos probe above
-		// existed, it hung the whole fingerprint attempt on EXOS's
-		// "Press <SPACE> to continue" prompt until the connect timeout.
-		// Every paging-gated probe in this list is immune to that
-		// specific failure by construction (a paging command the device
-		// doesn't recognize is rejected before the version command ever
-		// runs), so this probe -- the only one left with no paging step
-		// at all, other than mikrotik/linux below whose version commands
-		// are foreign enough on a network CLI to be low-risk -- is kept
-		// last among the paging-gated probes, immediately before
-		// aruba_procurve for the reason given in that probe's comment.
-		paging:     "",
+		paging:     "no page",
 		versionCmd: "show system",
 		classes: []versionClass{
 			{"aruba_cx", regexp.MustCompile(`(?i)ArubaOS-CX`)},
