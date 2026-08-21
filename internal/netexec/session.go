@@ -35,7 +35,22 @@ import (
 // DefaultPromptRegex matches the trailing prompt line of most network
 // operating systems and Unix shells: a non-whitespace run ending in
 // # > $ or %, e.g. "lab-r1#", "lab-r1(config)#", "user@lab-host:~$".
-const DefaultPromptRegex = `(?m)^[^\s]{1,80}[#>\$%]\s*$`
+//
+// The second alternative exists for one specific known real-world shape:
+// ExtremeXOS on a stack prefixes its prompt with the active member marker,
+// e.g. "* Slot-1 lab-exos1.1 #" — a prompt built from multiple
+// space-separated words, which the single-token first alternative cannot
+// match at all.
+//
+// This is deliberately anchored on the literal "* " marker rather than
+// "any line with a space before the terminal character": TestPromptDetection
+// already carries `{"lab-fw1 %", false}` for a real platform that emits a
+// non-prompt line shaped exactly like that, so "space before the terminal
+// char" is proven, not just suspected, to be an unsafe general signal.
+// Requiring the "* " prefix keeps the match narrow to the one shape it
+// exists for, rather than reopening the "mid-output line looks prompt-ish"
+// failure mode endsAtPrompt's single-line matching exists to avoid.
+const DefaultPromptRegex = `(?m)^(?:[^\s]{1,80}|\*\s.{1,77})[#>\$%]\s*$`
 
 // DefaultMaxOutputBytes bounds one command's output. Sized to hold any
 // running-config comfortably and to refuse a show tech-support, because
@@ -297,6 +312,20 @@ func (s *Session) expect(ctx context.Context, timeout time.Duration) (string, er
 		}
 		s.mu.Unlock()
 
+		// "Any key" genuinely means any key, so a single space is what
+		// gets sent -- unlike Enter or a letter key, it cannot be read as
+		// an answer to a yes/no question or a menu selection. This can
+		// send a few redundant spaces if the device is slow to react and
+		// more read chunks arrive before it does; a handful of leading
+		// spaces on an otherwise-empty input line ahead of the real
+		// prompt is harmless, and simpler than tracking which exact
+		// occurrence has already been acknowledged.
+		if looksLikeContinuePrompt(text) {
+			if err := s.send(" "); err != nil {
+				return text, fmt.Errorf("acknowledging continue prompt: %w", err)
+			}
+		}
+
 		if readErr != nil {
 			if over {
 				return "", s.tooLarge(count, fmt.Sprintf("session then closed: %v", readErr))
@@ -326,6 +355,38 @@ func (s *Session) tooLarge(count int64, note string) error {
 			ErrOutputTooLarge, count, s.limit, note)
 	}
 	return fmt.Errorf("%w: read %d bytes, limit %d", ErrOutputTooLarge, count, s.limit)
+}
+
+// continuePromptRe matches an interactive "send any key to proceed" gate: a
+// login banner/legal-notice acknowledgment (ArubaOS-Switch: "Press any key
+// to continue"), or a device's own output pager caught before any paging
+// command has had a chance to run or disable it at all. Two pager phrasings
+// are confirmed live: ExtremeXOS ("Press <SPACE> to continue or <Q> to
+// quit:") and ArubaOS-CX ("-- MORE --, next page: Space, next line: Enter,
+// quit: q") -- confirmed the hard way, since ArubaOS-CX has no documented
+// paging-disable command at all (see the aruba_cx fingerprint probe), so
+// this generic gate is the only thing standing between a long `show`
+// command on that platform and a 30-second timeout.
+//
+// Bounded to a short trailing line for the same reason LooksLikeRejection
+// in fingerprint.go is: real device output -- a running-config's own
+// banner motd line, for instance -- can legitimately CONTAIN this phrase as
+// configured text, and that is not the same thing as the device actually
+// being blocked on a keystroke right now. Checking only the buffer's
+// current trailing line, the same restriction endsAtPrompt already
+// applies, means this can only match where a live device would genuinely
+// be stuck: at the very end of whatever has arrived so far.
+var continuePromptRe = regexp.MustCompile(`(?i)press\s+\S.{0,30}?to\s+(continue|quit|proceed|start)|--\s*more\s*--`)
+
+// looksLikeContinuePrompt reports whether the final line of text is a
+// device waiting on an acknowledging keystroke rather than a real prompt or
+// a completed read.
+func looksLikeContinuePrompt(text string) bool {
+	line := lastLine(text)
+	if line == "" || len(line) > 200 {
+		return false
+	}
+	return continuePromptRe.MatchString(line)
 }
 
 // endsAtPrompt reports whether the final non-empty line of text matches the
