@@ -1,0 +1,125 @@
+Value Required LOCAL_INTERFACE (\S+)
+Value Required CHASSIS_ID (\S+)
+# CHASSIS_ID is Required (not just LOCAL_INTERFACE) specifically so
+# Comware 7's terse plain-form output -- see the note below -- cannot
+# produce a near-empty record. That form's port header line alone would
+# still set LOCAL_INTERFACE, and every field the shape actually carries
+# ("ChassisID/subtype", "PortID/subtype") is worded differently enough
+# that none of the rules below match it, so without this the implicit
+# EOF-Record would still emit a junk edge with a real local interface and
+# nothing else.
+Value NEIGHBOR_PORT_ID (.*)
+Value NEIGHBOR_NAME (.*)
+Value NEIGHBOR_DESCRIPTION (.*)
+Value CAPABILITIES (.*)
+Value MGMT_ADDRESS (.*)
+
+# Built from real captures off two different real Comware devices,
+# confirmed live (2026-08-21). Only one neighbor was ever seen with more
+# than one entry in play at a time, so unlike the EXOS template this does
+# NOT attempt to handle multiple neighbors on one port -- there is no
+# confirmed sample of what Comware's output looks like in that case, and
+# guessing would risk merging or dropping records silently. If a port ever
+# reports more than one neighbor in practice, "[LLDP ]neighbor index :"
+# (visible in the capture but not currently captured into a Value) is the
+# field that would need to become the second record-boundary trigger, the
+# same way EXOS's "  Neighbor:" line is.
+#
+# Comware 5 and Comware 7 need DIFFERENT commands for the same level of
+# detail, and this template is written against the OUTPUT SHAPE, not a
+# specific command, on the assumption both are sent (see plan.go):
+#   - Comware 5: plain `display lldp neighbor-information` already gives
+#     full per-field detail (Chassis type / Chassis ID / Port ID type /
+#     Port ID as separate lines).
+#   - Comware 7: the SAME plain command instead gives a terse summary
+#     ("ChassisID/subtype   : 0200-0000-5130/MAC address", a combined
+#     "PortID/subtype" line, and a single "Capabilities" line) that this
+#     template does NOT parse -- confirmed live, it silently yields zero
+#     records via the permissive catch-all rather than erroring, which is
+#     fine since Comware 7 needs `display lldp neighbor-information
+#     verbose` for the full-detail shape this template actually targets.
+# Sending both commands per device is safe on either version: whichever
+# one a given Comware major version doesn't understand or doesn't produce
+# matching output for contributes zero records rather than wrong ones, and
+# the crawler's own per-device edge dedup (see crawler.go) merges rather
+# than duplicates if a future firmware ever has both commands succeed with
+# overlapping data.
+#
+# Comware 7's verbose output adds a few things Comware 5's plain output
+# doesn't have, all handled as no-ops below: an "LLDP agent <name>:" line
+# ahead of the neighbor's own fields (multiple LLDP agent scopes exist in
+# the spec -- nearest-bridge, nearest-non-tpmr-bridge, nearest-customer-
+# bridge -- but only nearest-bridge has been seen in practice, so this
+# template does not attempt to separate them into distinct records), an
+# "LLDP neighbor index" label (Comware 5 has it too but without the "LLDP "
+# prefix -- both forms are matched), and a "Time to live" field.
+#
+# NEIGHBOR_DESCRIPTION is truncated on Comware 7 for a long System
+# description: it wraps across multiple physical lines with continuation
+# text indented under the field label, and only the first line is
+# captured. This is a deliberate, accepted limitation, the same call EXOS's
+# template makes for its own wrapped strings -- the truncated text still
+# reliably carries the vendor/model text a platform-detection fallback
+# would need, and attempting to detect and re-join continuation lines by
+# indentation risks slurping in an unrelated field's content instead.
+#
+# MGMT_ADDRESS's rule requires nothing but whitespace between "address" and
+# the colon on purpose: "Management address type", "Management address
+# interface type", and "Management address interface ID" all also start
+# with "Management address", and the confirmed real capture has all four
+# on adjacent lines. Requiring an immediate colon is what keeps the value
+# rule from matching any of the other three.
+#
+# The record boundary is the next "LLDP neighbor-information of port"
+# header line, the same "trigger on the next record's own opening marker"
+# idiom used by every other template in this project -- robust regardless
+# of whether a trailing separator is present, which matters here since the
+# only capture available ends at a "---- More ----" pager line, not a real
+# boundary.
+#
+# The catch-all is permissive (no -> Error) rather than this project's
+# usual strict default, for the same reason ExtremeXOS's template is: the
+# one capture available already shows a generic "Unknown organizationally-
+# defined TLV" section, meaning vendor-extension TLVs vary by neighbor and
+# a strict catch-all would very likely misfire on a TLV shape not present
+# in this one sample.
+Start
+  ^LLDP\s+neighbor-information\s+of\s+port\s+\S+\[\S+\]:\s*$$ -> Continue.Record
+  ^LLDP\s+neighbor-information\s+of\s+port\s+\S+\[${LOCAL_INTERFACE}\]:\s*$$
+  ^LLDP\s+agent\s+\S+:\s*$$
+  ^\s*(?:LLDP\s+)?[Nn]eighbor\s+index\s*:
+  ^\s*Update\s+time\s*:
+  ^\s*Time\s+to\s+live\s*:
+  ^\s*Chassis\s+type\s*:
+  ^\s*Chassis\s+ID\s*:\s*${CHASSIS_ID}\s*$$
+  ^\s*Port\s+ID\s+type\s*:
+  ^\s*Port\s+ID\s*:\s*${NEIGHBOR_PORT_ID}\s*$$
+  ^\s*Port\s+description\s*:
+  ^\s*System\s+name\s*:\s*${NEIGHBOR_NAME}\s*$$
+  ^\s*System\s+description\s*:\s*${NEIGHBOR_DESCRIPTION}\s*$$
+  ^\s*System\s+capabilities\s+supported\s*:
+  ^\s*System\s+capabilities\s+enabled\s*:\s*${CAPABILITIES}\s*$$
+  ^\s*Management\s+address\s*:\s*${MGMT_ADDRESS}\s*$$
+  ^\s*Management\s+address\s+type\s*:
+  ^\s*Management\s+address\s+interface\s+type\s*:
+  ^\s*Management\s+address\s+interface\s+ID\s*:
+  ^\s*Management\s+address\s+OID\s*:
+  ^\s*Power\s+port\s+class\s*:
+  ^\s*PSE\s+power\s+supported\s*:
+  ^\s*PSE\s+power\s+enabled\s*:
+  ^\s*PSE\s+pairs\s+control\s+ability\s*:
+  ^\s*Power\s+pairs\s*:
+  ^\s*Port\s+power\s+classification\s*:
+  ^\s*Port\s+VLAN\s+ID
+  ^\s*VLAN\s+name
+  ^\s*Auto-negotiation
+  ^\s*OperMau
+  ^\s*Maximum\s+frame\s+Size
+  ^\s*Unknown\s+organizationally-defined\s+TLV:?\s*$$
+  ^\s*TLV\s+OUI\s*:
+  ^\s*TLV\s+subtype\s*:
+  ^\s*Index\s*:
+  ^\s*TLV\s+information\s*:
+  ^-+\s*More\s*-+\s*$$
+  ^\s*$$
+  ^.*$$

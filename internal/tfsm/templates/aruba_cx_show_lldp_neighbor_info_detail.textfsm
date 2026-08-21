@@ -1,0 +1,43 @@
+Value Required LOCAL_INTERFACE (\S+)
+Value CHASSIS_ID (\S+)
+Value NEIGHBOR_PORT_ID (.*)
+Value NEIGHBOR_NAME (.*)
+Value NEIGHBOR_DESCRIPTION (.*)
+Value MGMT_ADDRESS (.*)
+Value CAPABILITIES (.*)
+
+# Built from a real `show lldp neighbor-info detail` capture off an
+# ArubaOS-CX 6300-series switch. Not yet exercised through `go test` in the
+# environment this was authored in (no Go toolchain available) — the field
+# mapping is real, but the state machine itself wants a live test run
+# before being trusted on a production crawl.
+#
+# Record boundary is the next "Port :" line rather than the trailing dash
+# separator, because the LAST block in a real capture has no trailing
+# separator before the stripped prompt. The very last record in the file
+# therefore still depends on gotextfsm's implicit EOF-Record when no
+# explicit EOF state is defined — standard TextFSM behavior, but the one
+# assumption in this file that most wants confirming.
+Start
+  ^Port\s*:\s*\S+\s*$$ -> Continue.Record
+  ^Port\s*:\s*${LOCAL_INTERFACE}\s*$$
+  ^Neighbor\s+Entries\s
+  ^Neighbor\s+System-Name\s*:\s*${NEIGHBOR_NAME}\s*$$
+  ^Neighbor\s+System-Description\s*:\s*${NEIGHBOR_DESCRIPTION}\s*$$
+  ^Neighbor\s+Chassis-ID\s*:\s*${CHASSIS_ID}\s*$$
+  ^Neighbor\s+Management-Address\s*:\s*${MGMT_ADDRESS}\s*$$
+  ^Chassis\s+Capabilities\s+Available
+  ^Chassis\s+Capabilities\s+Enabled\s*:\s*${CAPABILITIES}\s*$$
+  ^Neighbor\s+Port-ID\s*:\s*${NEIGHBOR_PORT_ID}\s*$$
+  ^Neighbor\s+Port-Desc
+  ^Neighbor\s+Port\s+VLAN
+  ^Neighbor\s+Port\s+MFS
+  ^Link\s+aggregation
+  ^Aggregation\s+port\s+ID
+  ^TTL\s*:
+  ^-+\s*$$
+  ^LLDP\s+Neighbor\s+Information\s*$$
+  ^=+\s*$$
+  ^Total\s+Neighbor\s+Entries
+  ^\s*$$
+  ^.* -> Error

@@ -47,8 +47,16 @@ func TestClassifyVersions(t *testing.T) {
 		{0, "some future platform", ""},
 		{1, "Hostname: lab-mx1\nModel: mx204\nJunos: 23.4R2.13", "juniper_junos"},
 		{2, "Cisco Adaptive Security Appliance Software Version 9.18(4)", "cisco_asa"},
-		{5, "version: 7.15.3 (stable)\nplatform: MikroTik", "mikrotik_routeros"},
-		{6, "Linux lab-host 6.8.0 #1 SMP x86_64 GNU/Linux", "linux"},
+		{4, "ExtremeXOS (X440-G2-48p-10G4) version 22.7.2.4", "extreme_exos"},
+		{5, "ArubaOS-CX Version : XL.10.00.0002C-1-g1b84ef2", "aruba_cx"},
+		{6, "HP J9729A 2920-24G Switch, revision KA.16.09.0022", "aruba_procurve"},
+		// Real `show version` output from an ArubaOS-Switch 3810M,
+		// captured live (2026-08-21): no vendor name text anywhere,
+		// only the "Image stamp:" label the classifier now also
+		// matches on.
+		{6, "Image stamp:\n /ws/swbuildm/rel_ajanta_qaoff/code/build/bom(swbuildm_rel_ajanta_qaoff_rel_ajanta)\n\t\tApr 10 2023 23:56:39\n\t\tKB.16.10.0024\n\t\t362\nBoot Image:     Secondary", "aruba_procurve"},
+		{7, "version: 7.15.3 (stable)\nplatform: MikroTik", "mikrotik_routeros"},
+		{8, "Linux lab-host 6.8.0 #1 SMP x86_64 GNU/Linux", "linux"},
 	}
 	for _, c := range cases {
 		if got := classify(c.out, probes[c.probeIdx].classes); got != c.want {
