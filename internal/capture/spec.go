@@ -210,6 +210,10 @@ var RunningConfig = Spec{
 		"cisco_nxos":    {Command: "show running-config"},
 		"arista_eos":    {Command: "show running-config"},
 		"juniper_junos": {Command: "show configuration | display set"},
+		"aruba_cx":       {Command: "show running-config"},
+		"aruba_procurve": {Command: "show running-config"},
+		"hp_comware":     {Command: "display current-configuration"},
+		"extreme_exos":   {Command: "show configuration"},
 	},
 }
 
@@ -224,6 +228,16 @@ var StartupConfig = Spec{
 		"cisco_iosxe": {Command: "show startup-config"},
 		"cisco_nxos":  {Command: "show startup-config"},
 		"arista_eos":  {Command: "show startup-config"},
+		"aruba_procurve": {Command: "show config"},
+		"hp_comware":     {Command: "display saved-configuration"},
+		// aruba_cx: likely has an equivalent (the `boot system`
+		// prompts offer to save running to startup), but no exact
+		// command was confirmed against vendor docs, so it is left
+		// out rather than guessed.
+		// extreme_exos: like Junos, EXOS has no separate
+		// running/startup split to read back via a show command —
+		// the saved config lives as a file, compared by copying it
+		// off rather than displaying it inline.
 		// Junos has no startup/running split — the committed
 		// configuration IS the startup one. Absent rather than
 		// duplicated, so the report says "not applicable" instead of
@@ -242,6 +256,10 @@ var Inventory = Spec{
 		"cisco_nxos":    {Command: "show inventory"},
 		"arista_eos":    {Command: "show inventory"},
 		"juniper_junos": {Command: "show chassis hardware"},
+		"aruba_cx":       {Command: "show system"},
+		"aruba_procurve": {Command: "show system information"},
+		"hp_comware":     {Command: "display device manuinfo"},
+		"extreme_exos":   {Command: "show switch"},
 	},
 }
 
@@ -267,6 +285,10 @@ var ARPTable = Spec{
 		"cisco_nxos":    {Command: "show ip arp"},
 		"arista_eos":    {Command: "show ip arp"},
 		"juniper_junos": {Command: "show arp no-resolve"},
+		"aruba_cx":       {Command: "show arp"},
+		"aruba_procurve": {Command: "show arp"},
+		"hp_comware":     {Command: "display arp"},
+		"extreme_exos":   {Command: "show iparp"},
 	},
 }
 
@@ -306,6 +328,10 @@ var MACTable = Spec{
 		"cisco_nxos":    {Command: "show mac address-table"},
 		"arista_eos":    {Command: "show mac address-table"},
 		"juniper_junos": {Command: "show ethernet-switching table brief", ModelMatch: junosSwitch},
+		"aruba_cx":       {Command: "show mac-address-table"},
+		"aruba_procurve": {Command: "show mac-address"},
+		"hp_comware":     {Command: "display mac-address"},
+		"extreme_exos":   {Command: "show fdb"},
 	},
 }
 

@@ -1,0 +1,54 @@
+Value Required,Filldown LOCAL_INTERFACE (\S+)
+Value Required CHASSIS_ID ([^"]*)
+Value NEIGHBOR_PORT_ID ([^"]*)
+Value NEIGHBOR_NAME ([^"]*)
+Value NEIGHBOR_DESCRIPTION ([^"]*)
+Value MGMT_ADDRESS (.*)
+Value CAPABILITIES ([^"]*)
+
+# Built from a real `show lldp neighbors detailed` capture off an EXOS
+# stack (X620 series). By far the least confident of the three new
+# platform templates added alongside this one (aruba_procurve, aruba_cx) —
+# NOT exercised through `go test` (no Go toolchain in the authoring
+# environment), and it leans on two mechanisms neither of the other new
+# templates need:
+#
+#   1. Filldown on LOCAL_INTERFACE. A single "LLDP Port X:Y detected N
+#      neighbors" header can be followed by MULTIPLE "  Neighbor:" blocks
+#      (a phone and the PC behind it on the same switchport is the common
+#      real-world case) and every one of those neighbors needs the SAME
+#      local interface. Filldown is standard TextFSM behavior for exactly
+#      this, but this codebase's other templates never needed it, so it is
+#      unverified against this specific gotextfsm build.
+#   2. A permissive (non-Error) catch-all instead of this codebase's usual
+#      strict "unexpected line -> Error". EXOS's detailed output carries
+#      several optional nested TLV sections not modeled here (MED Network
+#      Policy, Extended Power-via-MDI, IEEE802.3 Link-aggregation, raw hex
+#      TLV dumps, multi-line-wrapped quoted strings with a trailing
+#      backslash continuation) that aren't needed for topology edges. A
+#      strict Error catch-all would almost certainly misfire on a TLV
+#      variant not present in the one capture this was built from.
+#
+# CHASSIS_ID and NEIGHBOR_PORT_ID double as the "does this neighbor have
+# any data yet" signal for the Continue.Record trigger on each new
+# "  Neighbor:" line: CHASSIS_ID is Required, so the harmless first fire
+# per port (before any neighbor fields are parsed) is silently dropped
+# rather than emitting a garbage all-empty row, and it resets between
+# neighbors on the same port because it is NOT Filldown.
+#
+# As with the other two new templates, the LAST record in the file has no
+# trailing marker before the stripped prompt, so it depends on gotextfsm's
+# implicit EOF-Record — standard TextFSM behavior, but unverified here.
+Start
+  ^LLDP\s+Port\s+${LOCAL_INTERFACE}\s+detected\s+\d+\s+neighbors?\s*$$
+  ^\s+Neighbor:\s -> Continue.Record
+  ^\s+Neighbor:\s+${NEIGHBOR_NAME}/\S+,\s+age\s+\d+\s+seconds\s*$$
+  ^\s+Chassis\s+ID\s*:\s*"?${CHASSIS_ID}"?\s*$$
+  ^\s+Port\s+ID\s*:\s*"?${NEIGHBOR_PORT_ID}"?\s*$$
+  ^\s+System\s+Name:\s+"?${NEIGHBOR_NAME}"?\s*$$
+  ^\s+System\s+Description:\s+"?${NEIGHBOR_DESCRIPTION}
+  ^\s+Enabled\s+Capabilities:\s+"?${CAPABILITIES}"?\s*$$
+  ^\s+Management\s+Address\s+:\s*${MGMT_ADDRESS}\s*$$
+  ^-+\s*$$
+  ^\s*$$
+  ^.*$$

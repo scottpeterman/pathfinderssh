@@ -18,12 +18,56 @@ import (
 // (window titles), and stray single-character escapes.
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(\x07|\x1b\\)|\x1b[@-_]`)
 
-// Normalize strips ANSI escape sequences, resolves CR handling (CRLF ->
-// LF, then a lone CR keeps only the text after it — the overwrite
-// semantics pagers and progress lines rely on), and drops NUL/BEL bytes.
+// cursorToColumnOneRe matches a CSI cursor-position escape that moves to
+// column 0 or 1 of some row, e.g. "\x1b[60;1H".
+//
+// Confirmed live against an ArubaOS-Switch 3810M: it redraws its prompt at
+// a fixed screen row using absolute cursor addressing instead of a
+// trailing newline. A full terminal emulator like PuTTY renders that
+// cursor jump as a fresh line; ansiRe's blanket escape-stripping would
+// otherwise collapse the preceding text and the redrawn prompt together
+// with nothing between them, e.g. the echoed command "no page" landing
+// directly against the next prompt as "no pagelab-sw01#" -- which then
+// matches no prompt regex at all and times out the caller.
+//
+// Recognizing this one specific sequence shape as a line break, before
+// ansiRe strips it away, recovers the line boundary these devices convey
+// through cursor position rather than through bytes. Deliberately narrow:
+// column 11, 18, etc. (repositioning within the same line to place the
+// cursor after echoed input) do not match, only a move all the way back to
+// the start of a row does -- that is the distinction between "the device
+// is repositioning within what it just drew" and "the device is starting
+// a new line."
+var cursorToColumnOneRe = regexp.MustCompile(`\x1b\[\d+;[01]H`)
+
+// crlfRunRe matches one or more CRs immediately followed by an LF, e.g.
+// "\r\n" or "\r\r\n".
+//
+// Confirmed live (2026-08-21) against a real Comware 7 switch (HP
+// 5900AF): every line of its output ends in "\r\r\n" rather than "\r\n" --
+// a doubled carriage return before the line feed. A plain "\r\n" -> "\n"
+// replacement leaves the first of those two CRs behind, and the bare-CR
+// overwrite handling immediately below then reads it as "discard
+// everything on this line before me" -- the same rule that correctly
+// collapses a progress bar's "10%\rdone" down to "done". Against this
+// device it instead discarded EVERY line's actual content, turning real
+// output ("HP Comware Software, Version 7.1.045...") into nothing but
+// blank lines, which is why display version's real text never reached the
+// classifier at all. Matching a whole run of CRs before the LF, rather
+// than just one, collapses the doubled terminator to a single newline
+// before the overwrite logic ever sees it, without changing behavior for
+// a normal single "\r\n" or a genuine mid-line progress-bar CR (which is
+// never immediately followed by "\n" -- see clean_test.go).
+var crlfRunRe = regexp.MustCompile(`\r+\n`)
+
+// Normalize strips ANSI escape sequences, resolves CR handling (a run of
+// CRs immediately before an LF collapses to one LF, then a remaining lone
+// CR keeps only the text after it — the overwrite semantics pagers and
+// progress lines rely on), and drops NUL/BEL bytes.
 func Normalize(s string) string {
+	s = cursorToColumnOneRe.ReplaceAllString(s, "\n")
 	s = ansiRe.ReplaceAllString(s, "")
-	s = strings.ReplaceAll(s, "\r\n", "\n")
+	s = crlfRunRe.ReplaceAllString(s, "\n")
 	if strings.ContainsRune(s, '\r') {
 		lines := strings.Split(s, "\n")
 		for i, line := range lines {

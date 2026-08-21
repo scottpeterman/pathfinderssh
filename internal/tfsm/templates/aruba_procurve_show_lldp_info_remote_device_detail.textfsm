@@ -1,0 +1,52 @@
+Value Required LOCAL_INTERFACE (\S+)
+Value CHASSIS_ID (\S+)
+Value NEIGHBOR_PORT_ID (.*)
+Value NEIGHBOR_NAME (.*)
+Value NEIGHBOR_DESCRIPTION (.*)
+Value MGMT_ADDRESS (.*)
+Value CAPABILITIES (.*)
+
+# Built from, and confirmed live (2026-08-21) against, a real ArubaOS-
+# Switch (ProVision) 3810M running an actual crawl. The implicit-EOF-Record
+# assumption (no explicit EOF state defined; see tfsm_test.go) is confirmed
+# working -- the last neighbor block in a real capture has no trailing
+# separator before the stripped prompt, and it still gets recorded.
+#
+# MGMT_ADDRESS is `(.*)`, not `(\S+)`: a live capture had a neighbor whose
+# Remote Management Address Type was "all802" rather than "ipv4", with the
+# address given as six space-separated hex byte pairs ("02 00 00 00 51 20")
+# instead of a single dotted-quad token. `\S+` could not match past the
+# first byte and fell through to the catch-all Error rule.
+#
+# Record boundary is the next "Local Port :" line rather than the trailing
+# dash separator, because the LAST block in a real capture has no trailing
+# separator before the stripped prompt — same idiom juniper_junos's detail
+# template already uses.
+Start
+  ^\s*Local\s+Port\s*:\s*\S+\s*$$ -> Continue.Record
+  ^\s*Local\s+Port\s*:\s*${LOCAL_INTERFACE}\s*$$
+  ^\s*ChassisType\s*:
+  ^\s*ChassisId\s*:\s*${CHASSIS_ID}\s*$$
+  ^\s*PortType\s*:
+  ^\s*PortId\s*:\s*${NEIGHBOR_PORT_ID}\s*$$
+  ^\s*SysName\s*:\s*${NEIGHBOR_NAME}\s*$$
+  ^\s*System\s+Descr\s*:\s*${NEIGHBOR_DESCRIPTION}\s*$$
+  ^\s*PortDescr\s*:
+  ^\s*Pvid\s*:
+  ^\s*System\s+Capabilities\s+Supported\s*:
+  ^\s*System\s+Capabilities\s+Enabled\s*:\s*${CAPABILITIES}\s*$$
+  ^\s*Remote\s+Management\s+Address\s*$$
+  ^\s*Type\s*:
+  ^\s*Address\s*:\s*${MGMT_ADDRESS}\s*$$
+  ^\s*MED\s+Information\s+Detail\s*$$
+  ^\s*EndpointClass
+  ^\s*Poe\s+Plus\s+Information\s+Detail\s*$$
+  ^\s*Poe\s+Device\s+Type\s*:
+  ^\s*Power\s+Source\s*:
+  ^\s*Power\s+Priority\s*:
+  ^\s*PD\s+Requested\s+Power\s+Value\s*:
+  ^\s*PSE\s+Allocated\s+Power\s+Value\s*:
+  ^-+\s*$$
+  ^\s*LLDP\s+Remote\s+Device\s+Information\s+Detail\s*$$
+  ^\s*$$
+  ^.* -> Error

@@ -32,13 +32,28 @@ var readOnly = map[string]bool{
 	"show running-config":              true,
 	"show startup-config":              true,
 	"show configuration | display set": true,
+	"show config":                      true, // ArubaOS-Switch startup-config
+	"show configuration":               true, // ExtremeXOS running-config
+	"display current-configuration":    true, // Comware running-config
+	"display saved-configuration":      true, // Comware startup-config
 	// Inventory.
 	"show inventory":        true,
 	"show chassis hardware": true,
+	"show system":                 true, // ArubaOS-CX
+	"show system information":     true, // ArubaOS-Switch
+	"display device manuinfo":     true, // Comware
+	"show switch":                 true, // ExtremeXOS
 	// Forwarding and resolution tables.
 	"show ip arp":            true,
 	"show arp no-resolve":    true,
 	"show mac address-table": true,
+	"show arp":                true, // ArubaOS-CX, ArubaOS-Switch
+	"display arp":             true, // Comware
+	"show iparp":              true, // ExtremeXOS
+	"show mac-address-table":  true, // ArubaOS-CX
+	"show mac-address":        true, // ArubaOS-Switch
+	"display mac-address":     true, // Comware
+	"show fdb":                true, // ExtremeXOS
 	// Junos ELS. Gated to QFX/EX by ModelMatch; see MACTable.
 	"show ethernet-switching table brief": true,
 }

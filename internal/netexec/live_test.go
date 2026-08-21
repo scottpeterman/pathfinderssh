@@ -85,6 +85,65 @@ func TestFingerprintIdentifiesEachPlatform(t *testing.T) {
 	}
 }
 
+// Comware's "screen-length disable" reports its own already-applied state
+// with a leading '%', which the generic isCLIError check reads as a
+// rejection -- confirmed live (2026-08-21) against a real Comware 5
+// switch, where this caused Fingerprint to skip straight past a working
+// "display version" and report "unknown". probe.pagingBenign exists to
+// stop that specific message from being read as "wrong platform."
+func TestFingerprintAcceptsComwaresBenignPagingNotice(t *testing.T) {
+	cfg := fakedev.Config{
+		Prompt:            "<lab-core1>",
+		AcceptAnyPassword: true,
+		Commands: map[string]string{
+			"screen-length disable": "% Screen-length configuration is disabled for current user.",
+			"display version":       "HPE Comware Platform Software\nComware Software, Version 5.20.99, Release 5501P36",
+		},
+		Unknown: "% Unrecognized command found at '^' position.",
+	}
+	_, sess := session(t, cfg, netexec.Options{})
+
+	p, err := netexec.Fingerprint(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	if p.Name != "hp_comware" {
+		t.Errorf("Name = %q, want %q (version output: %q)", p.Name, "hp_comware", p.VersionOutput)
+	}
+}
+
+// "no page" disables paging on ArubaOS-CX, confirmed live (2026-08-21) --
+// the same command ArubaOS-Switch uses, apparently carried over as a
+// legacy-compatible alias. This probe originally shipped with no paging
+// step at all on the wrong assumption that ArubaOS-CX had none to offer;
+// there was no end-to-end fingerprint test for this platform before now,
+// only the regex-only classification case in TestClassifyVersions, which
+// would not have caught the difference between "no page" being sent and
+// not being sent at all.
+func TestFingerprintDisablesPagingOnArubaCX(t *testing.T) {
+	cfg := fakedev.Config{
+		Prompt:            "lab-cx1#",
+		AcceptAnyPassword: true,
+		Commands: map[string]string{
+			"no page":     "",
+			"show system": "Vendor             : Aruba\nArubaOS-CX Version : GL.10.13.1050",
+		},
+		Unknown: "% Unrecognized command found at '^' position.",
+	}
+	_, sess := session(t, cfg, netexec.Options{})
+
+	p, err := netexec.Fingerprint(context.Background(), sess)
+	if err != nil {
+		t.Fatalf("fingerprint: %v", err)
+	}
+	if p.Name != "aruba_cx" {
+		t.Errorf("Name = %q, want %q (version output: %q)", p.Name, "aruba_cx", p.VersionOutput)
+	}
+	if p.PagingDisable != "no page" {
+		t.Errorf("PagingDisable = %q, want %q", p.PagingDisable, "no page")
+	}
+}
+
 // A device nobody has a probe for must come back "unknown" with a nil
 // error, not an error. The crawler treats those differently and the
 // distinction has never been exercised against a live session.
@@ -134,12 +193,13 @@ func TestFingerprintCostIsBoundedForTheWorstCase(t *testing.T) {
 	if _, err := netexec.Fingerprint(context.Background(), sess); err != nil {
 		t.Fatalf("fingerprint: %v", err)
 	}
-	// Measured: 7. A device at the bottom of the ladder pays for every
-	// probe above it, and each one is a round trip — on a link with
-	// 300ms of latency that is two seconds spent deciding the box is a
+	// Measured: 9 (was 7 before the aruba_cx and extreme_exos probes were
+	// added). A device at the bottom of the ladder pays for every probe
+	// above it, and each one is a round trip — on a link with 300ms of
+	// latency that is over two seconds spent deciding the box is a
 	// server. Set tight so reordering or extending the probes shows up
 	// here rather than as an unexplained slow crawl.
-	if n := len(srv.Asked()); n > 8 {
+	if n := len(srv.Asked()); n > 10 {
 		t.Errorf("fingerprinting a Linux host took %d commands: %v", n, srv.Asked())
 	}
 }

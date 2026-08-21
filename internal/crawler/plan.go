@@ -65,6 +65,38 @@ var plans = map[string][]step{
 		{Command: "show lldp neighbors detail", Key: "lldp_detail", Protocol: "lldp", BestEffort: true, EdgeSource: true},
 		{Command: "show lldp neighbors", Key: "lldp", Protocol: "lldp", EdgeSource: true},
 	},
+	// The three plans below are new and, unlike the ones above, have not
+	// been run against real gear through this codebase's own test harness
+	// (no Go toolchain in the authoring environment) -- only against the
+	// TextFSM templates by hand. BestEffort is set unconditionally on all
+	// three so a template gap degrades to "no neighbors found" rather than
+	// aborting the device's crawl. See internal/tfsm/templates for the
+	// per-template confidence notes.
+	"aruba_procurve": {
+		{Command: "show lldp info remote-device detail", Key: "lldp_detail", Protocol: "lldp", BestEffort: true, EdgeSource: true},
+	},
+	"aruba_cx": {
+		{Command: "show lldp neighbor-info detail", Key: "lldp_detail", Protocol: "lldp", BestEffort: true, EdgeSource: true},
+	},
+	"extreme_exos": {
+		{Command: "show lldp neighbors detailed", Key: "lldp_detail", Protocol: "lldp", BestEffort: true, EdgeSource: true},
+	},
+	"hp_comware": {
+		// Confirmed live (2026-08-21) against two different Comware
+		// devices: Comware 5's plain form already gives full per-field
+		// detail, but the SAME command on Comware 7 gives a terse
+		// summary (combined "ChassisID/subtype" and "PortID/subtype"
+		// lines, one "Capabilities" line) the template below does not
+		// parse -- Comware 7 needs the "verbose" form for the matching
+		// shape. Both are sent, in the order most likely to match
+		// first: a version that doesn't understand one command either
+		// rejects it cleanly or produces non-matching output, and the
+		// template's permissive catch-all means either failure mode
+		// contributes zero records rather than corrupting the ones the
+		// other command found.
+		{Command: "display lldp neighbor-information verbose", Key: "lldp_detail", Protocol: "lldp", BestEffort: true, EdgeSource: true},
+		{Command: "display lldp neighbor-information", Key: "lldp_detail", Protocol: "lldp", BestEffort: true, EdgeSource: true},
+	},
 }
 
 // planFor returns the collection plan for a fingerprinted platform.

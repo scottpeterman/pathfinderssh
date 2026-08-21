@@ -54,6 +54,22 @@ var selection = map[string]map[string]string{
 		"lldp_detail": "juniper_junos_show_lldp_neighbors_detail.textfsm",
 		"lldp":        "juniper_junos_show_lldp_neighbors.textfsm",
 	},
+	// The following three are built from real device captures but, unlike
+	// every other entry above, have not been run through go test in this
+	// repo (no Go toolchain in the authoring environment). See the comment
+	// at the top of each .textfsm file for what specifically is unverified.
+	"aruba_procurve": {
+		"lldp_detail": "aruba_procurve_show_lldp_info_remote_device_detail.textfsm",
+	},
+	"aruba_cx": {
+		"lldp_detail": "aruba_cx_show_lldp_neighbor_info_detail.textfsm",
+	},
+	"extreme_exos": {
+		"lldp_detail": "extreme_exos_show_lldp_neighbors_detailed.textfsm",
+	},
+	"hp_comware": {
+		"lldp_detail": "hp_comware_display_lldp_neighbor_information.textfsm",
+	},
 }
 
 var (
