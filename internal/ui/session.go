@@ -101,11 +101,16 @@ type Session struct {
 	tp     term.Transport
 	stream *gopyte.Stream
 
-	// writeMu serialises writes so the input path and the anti-idle
-	// goroutine cannot interleave bytes on the channel (x/crypto/ssh
-	// channels are not safe for concurrent writers, and a serial port is
-	// only safe for one writer at a time).
+	// writeMu serialises the writer loop's transport.Write calls
+	// (x/crypto/ssh channels and serial ports are not safe for concurrent writers).
 	writeMu sync.Mutex
+
+	// writeCh carries outbound bytes off the UI thread. TypedKey/TypedRune
+	// run on Fyne's UI goroutine; a blocking SSH Write there freezes the
+	// whole window (including the terminal paint). The writer loop owns the
+	// actual transport.Write.
+	writeCh     chan []byte
+	cancelWrite context.CancelFunc
 
 	// cancelRead stops the read loop on a local teardown.
 	cancelRead context.CancelFunc
@@ -204,6 +209,11 @@ func (s *Session) Attach(tp term.Transport) error {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	s.cancelRead = cancel
+
+	writeCtx, cancelWrite := context.WithCancel(context.Background())
+	s.cancelWrite = cancelWrite
+	s.writeCh = make(chan []byte, 256)
+	go s.writeLoop(writeCtx)
 
 	// Push the grid size at the far end before any output arrives. The PTY was
 	// opened at whatever size the dialler asked for, which is term.DefaultSize
@@ -363,30 +373,87 @@ func (s *Session) readLoop(ctx context.Context) {
 	}
 }
 
+// feedChunk is how much VT input we parse under one screen lock. Holding the
+// lock across a full 64 KiB read starves the paint path (which needs the same
+// lock to snapshot), so the terminal looks frozen under bursty output.
+const feedChunk = 4 * 1024
+
 // feed pushes a complete-rune string into the VT engine.
 //
-// The model lock is held across the whole Feed: the handlers it dispatches to
+// The model lock is held across each chunk Feed: the handlers it dispatches to
 // write the screen with no locking of their own, so this is what serialises
-// them against the render and selection readers. The recover is not
-// defensive habit -- a malformed or boundary-split sequence that drives a
-// handler into a panic would otherwise take down the read goroutine, and with
-// it the app.
+// them against the render and selection readers. Chunks release the lock
+// between slices so a redraw can run. The recover is not defensive habit -- a
+// malformed or boundary-split sequence that drives a handler into a panic would
+// otherwise take down the read goroutine, and with it the app.
 func (s *Session) feed(str string) {
 	if s.stream == nil {
 		return
 	}
-	s.screen.Lock()
-	defer s.screen.Unlock()
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("recovered panic feeding stream: %v", r)
+	for len(str) > 0 {
+		n := feedChunk
+		if n > len(str) {
+			n = len(str)
 		}
-	}()
-	s.stream.Feed(str)
+		// Do not split a UTF-8 sequence across chunks.
+		for n < len(str) && n > 0 && !utf8.RuneStart(str[n]) {
+			n--
+		}
+		if n == 0 {
+			_, size := utf8.DecodeRuneInString(str)
+			n = size
+		}
+		chunk := str[:n]
+		str = str[n:]
+
+		func() {
+			s.screen.Lock()
+			defer s.screen.Unlock()
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("recovered panic feeding stream: %v", r)
+				}
+			}()
+			s.stream.Feed(chunk)
+		}()
+	}
 }
 
-// write sends bytes to the far end under the write lock.
+// writeLoop drains writeCh onto the transport. One goroutine only: SSH channels
+// and serial ports are not safe for concurrent writers.
+func (s *Session) writeLoop(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case data := <-s.writeCh:
+			s.writeSync(data)
+		}
+	}
+}
+
+// write queues bytes for the writer loop. Never blocks the UI thread on a
+// stalled TCP window.
 func (s *Session) write(data []byte) {
+	if len(data) == 0 || s.writeCh == nil {
+		return
+	}
+	cp := append([]byte(nil), data...)
+	select {
+	case s.writeCh <- cp:
+	default:
+		// Queue full (huge paste / stalled link). Park off the UI thread.
+		go func() {
+			select {
+			case s.writeCh <- cp:
+			case <-time.After(5 * time.Second):
+				log.Printf("transport write queue full; dropped %d bytes", len(cp))
+			}
+		}()
+	}
+}
+
+func (s *Session) writeSync(data []byte) {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 	tp := s.transport()
@@ -469,6 +536,10 @@ func (s *Session) Close() error {
 	if s.cancelRead != nil {
 		s.cancelRead()
 		s.cancelRead = nil
+	}
+	if s.cancelWrite != nil {
+		s.cancelWrite()
+		s.cancelWrite = nil
 	}
 	s.stopLogger()
 

@@ -96,12 +96,12 @@ func newFindController(t *NativeTerminalWidget) *findController {
 	// itself focusable, so without this a click on prev/next parks focus on the
 	// button, where Escape no longer closes the bar and typing no longer
 	// refines the query.
-	prev := widget.NewButtonWithIcon("", theme.NavigateBackIcon(), func() {
+	prev := widget.NewButtonWithIcon("", theme.MediaSkipPreviousIcon(), func() {
 		f.prev()
 		f.focusEntry()
 	})
 	prev.Importance = widget.LowImportance
-	nextBtn := widget.NewButtonWithIcon("", theme.NavigateNextIcon(), func() {
+	nextBtn := widget.NewButtonWithIcon("", theme.MediaSkipNextIcon(), func() {
 		f.next()
 		f.focusEntry()
 	})
