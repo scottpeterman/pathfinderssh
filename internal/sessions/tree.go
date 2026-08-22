@@ -8,27 +8,28 @@
 // decided was worth keeping, with the names and groupings they chose. An import
 // that overwrote either would be throwing away the more expensive of the two.
 //
-// # One level of folders
+// # Nested folders
 //
-// A folder holds nodes; a folder does not hold folders. That is the shape of
-// the file this replaces and it is the shape people actually use — site, or
-// role, or customer, and then the devices. Arbitrary nesting costs a recursive
-// widget, a recursive merge, and an answer to "where does an imported device go
-// if its folder moved" — for a second axis of grouping that a search box
-// already gives.
+// Folders hold sessions and child folders. Paths are slash-separated
+// ("Customers/PBB/Hagerstown MD") so SecureCRT-style trees import without
+// flattening. Version 1 files (flat only) still load; ExpandEncodedPaths
+// upgrades legacy "A / B / C" names from older CRT imports.
 //
 // # Two file shapes, one loader
 //
 // The native file is a mapping with a version, so a later top-level key is an
 // addition rather than a format break:
 //
-//	version: 1
+//	version: 2
 //	folders:
 //	  - folder_name: Lab
 //	    sessions:
 //	      - name: eng-spine-1
 //	        transport: ssh
 //	        host: 172.16.2.5
+//	    folders:
+//	      - folder_name: Spines
+//	        sessions: []
 //
 // Load also accepts a bare top-level LIST of folders, which is how the older
 // terminal wrote its file. Structure alone is not enough to open one of those
@@ -59,16 +60,16 @@ import (
 	"github.com/scottpeterman/pathfinderssh/internal/topo"
 )
 
-// FileVersion is written into every saved tree. It is not consulted on load —
-// nothing has needed a migration yet — but a file that does not carry it is
-// indistinguishable from one written before anybody thought about it.
-const FileVersion = 1
+// FileVersion is written into every saved tree. Version 2 adds nested folders;
+// v1 files still load (empty child lists).
+const FileVersion = 2
 
-// Folder is one group of sessions. The YAML keys match the older terminal's
-// file on purpose, so the outline of an existing tree is recognisable in both.
+// Folder is one group of sessions and optional child folders. YAML keys match
+// the older terminal's file so existing trees stay recognizable.
 type Folder struct {
-	Name     string `yaml:"folder_name"`
-	Sessions []Node `yaml:"sessions"`
+	Name     string   `yaml:"folder_name"`
+	Sessions []Node   `yaml:"sessions"`
+	Folders  []Folder `yaml:"folders,omitempty"`
 }
 
 // Tree is a whole session file.
@@ -96,31 +97,42 @@ func UnmarshalTree(data []byte) (Tree, error) {
 	var t Tree
 	mapErr := yaml.Unmarshal(data, &t)
 	if mapErr == nil && (len(t.Folders) > 0 || t.Version != 0) {
-		return t.normalized(), nil
+		out := t.normalized()
+		out.ExpandEncodedPaths()
+		return out, nil
 	}
 
 	// Bare list of folders — the older terminal's shape.
 	var folders []Folder
 	if err := yaml.Unmarshal(data, &folders); err == nil {
-		return Tree{Version: FileVersion, Folders: folders}.normalized(), nil
+		out := Tree{Version: FileVersion, Folders: folders}.normalized()
+		out.ExpandEncodedPaths()
+		return out, nil
 	}
 
 	if mapErr != nil {
 		return Tree{}, fmt.Errorf("parse session file: %w", mapErr)
 	}
-	return t.normalized(), nil
+	out := t.normalized()
+	out.ExpandEncodedPaths()
+	return out, nil
 }
 
 // MarshalTree renders a tree as it would be written to disk.
 func MarshalTree(t Tree) ([]byte, error) {
 	t.Version = FileVersion
 	out := t.normalized()
-	for i := range out.Folders {
-		for j := range out.Folders[i].Sessions {
-			out.Folders[i].Sessions[j] = trimForFile(out.Folders[i].Sessions[j])
-		}
-	}
+	trimFoldersForFile(out.Folders)
 	return yaml.Marshal(out)
+}
+
+func trimFoldersForFile(folders []Folder) {
+	for i := range folders {
+		for j := range folders[i].Sessions {
+			folders[i].Sessions[j] = trimForFile(folders[i].Sessions[j])
+		}
+		trimFoldersForFile(folders[i].Folders)
+	}
 }
 
 // trimForFile drops the fields the node's transport does not use.
@@ -214,16 +226,22 @@ func SaveFile(path string, t Tree) error {
 }
 
 func (t Tree) normalized() Tree {
-	out := Tree{Version: t.Version, Folders: make([]Folder, 0, len(t.Folders))}
-	if out.Version == 0 {
-		out.Version = FileVersion
-	}
-	for _, f := range t.Folders {
-		nf := Folder{Name: f.Name, Sessions: make([]Node, 0, len(f.Sessions))}
+	out := Tree{Version: FileVersion, Folders: normalizeFolders(t.Folders)}
+	return out
+}
+
+func normalizeFolders(in []Folder) []Folder {
+	out := make([]Folder, 0, len(in))
+	for _, f := range in {
+		nf := Folder{
+			Name:     strings.TrimSpace(f.Name),
+			Sessions: make([]Node, 0, len(f.Sessions)),
+			Folders:  normalizeFolders(f.Folders),
+		}
 		for _, n := range f.Sessions {
 			nf.Sessions = append(nf.Sessions, n.Normalize())
 		}
-		out.Folders = append(out.Folders, nf)
+		out = append(out, nf)
 	}
 	return out
 }
@@ -262,23 +280,34 @@ func (n Node) Key() string {
 // Keys returns every address already in the tree.
 func (t Tree) Keys() map[string]bool {
 	seen := map[string]bool{}
-	for _, f := range t.Folders {
-		for _, n := range f.Sessions {
-			if k := n.Key(); k != "" {
-				seen[k] = true
+	var walk func([]Folder)
+	walk = func(folders []Folder) {
+		for _, f := range folders {
+			for _, n := range f.Sessions {
+				if k := n.Key(); k != "" {
+					seen[k] = true
+				}
 			}
+			walk(f.Folders)
 		}
 	}
+	walk(t.Folders)
 	return seen
 }
 
-// Nodes flattens the tree. Order is folder order, then session order — what
-// the file says, not sorted, because the order is something the user arranged.
+// Nodes flattens the tree. Order is depth-first folder order, then session
+// order — what the file says, not sorted, because the order is something the
+// user arranged.
 func (t Tree) Nodes() []Node {
 	out := make([]Node, 0)
-	for _, f := range t.Folders {
-		out = append(out, f.Sessions...)
+	var walk func([]Folder)
+	walk = func(folders []Folder) {
+		for _, f := range folders {
+			out = append(out, f.Sessions...)
+			walk(f.Folders)
+		}
 	}
+	walk(t.Folders)
 	return out
 }
 
@@ -299,49 +328,131 @@ func (t Tree) FolderIndex(name string) int {
 	return -1
 }
 
-// AddFolder appends an empty folder.
+// AddFolder appends an empty folder. name may be a nested path ("A/B"); every
+// missing segment is created. The leaf must not already exist under its parent.
 func (t *Tree) AddFolder(name string) error {
-	name = strings.TrimSpace(name)
-	if name == "" {
+	parts := SplitPath(name)
+	if len(parts) == 0 {
 		return fmt.Errorf("folder name is required")
 	}
-	if t.FolderIndex(name) >= 0 {
-		return fmt.Errorf("a folder called %q already exists", name)
+	leaf := parts[len(parts)-1]
+	if strings.Contains(leaf, PathSep) {
+		return fmt.Errorf("folder name %q must not contain %q", leaf, PathSep)
 	}
-	t.Folders = append(t.Folders, Folder{Name: name})
+	if len(parts) == 1 {
+		if t.FolderIndex(leaf) >= 0 {
+			return fmt.Errorf("a folder called %q already exists", leaf)
+		}
+		t.Folders = append(t.Folders, Folder{Name: leaf})
+		return nil
+	}
+	parentPath := JoinPath(parts[:len(parts)-1]...)
+	parent, err := t.EnsurePath(parentPath)
+	if err != nil {
+		return err
+	}
+	want := strings.ToLower(leaf)
+	for _, c := range parent.Folders {
+		if strings.ToLower(strings.TrimSpace(c.Name)) == want {
+			return fmt.Errorf("a folder called %q already exists under %q", leaf, parentPath)
+		}
+	}
+	parent.Folders = append(parent.Folders, Folder{Name: leaf})
 	return nil
 }
 
-// RenameFolder changes a folder's name, keeping its position and contents.
-func (t *Tree) RenameFolder(oldName, newName string) error {
+// RenameFolder changes a folder's leaf name (path or top-level name).
+func (t *Tree) RenameFolder(oldPath, newName string) error {
 	newName = strings.TrimSpace(newName)
 	if newName == "" {
 		return fmt.Errorf("folder name is required")
 	}
-	i := t.FolderIndex(oldName)
-	if i < 0 {
-		return fmt.Errorf("no folder called %q", oldName)
+	if strings.Contains(newName, PathSep) || strings.Contains(newName, " / ") {
+		return fmt.Errorf("folder name must be a single segment, not a path")
 	}
-	if j := t.FolderIndex(newName); j >= 0 && j != i {
-		return fmt.Errorf("a folder called %q already exists", newName)
+	parts := SplitPath(oldPath)
+	if len(parts) == 0 {
+		return fmt.Errorf("no folder called %q", oldPath)
 	}
-	t.Folders[i].Name = newName
+	if len(parts) == 1 {
+		i := t.FolderIndex(parts[0])
+		if i < 0 {
+			return fmt.Errorf("no folder called %q", oldPath)
+		}
+		if j := t.FolderIndex(newName); j >= 0 && j != i {
+			return fmt.Errorf("a folder called %q already exists", newName)
+		}
+		t.Folders[i].Name = newName
+		return nil
+	}
+	parentPath := JoinPath(parts[:len(parts)-1]...)
+	parent, err := t.FolderAt(parentPath)
+	if err != nil {
+		return fmt.Errorf("no folder called %q", oldPath)
+	}
+	wantOld := strings.ToLower(parts[len(parts)-1])
+	idx := -1
+	for i, c := range parent.Folders {
+		if strings.ToLower(strings.TrimSpace(c.Name)) == wantOld {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("no folder called %q", oldPath)
+	}
+	wantNew := strings.ToLower(newName)
+	for i, c := range parent.Folders {
+		if i != idx && strings.ToLower(strings.TrimSpace(c.Name)) == wantNew {
+			return fmt.Errorf("a folder called %q already exists under %q", newName, parentPath)
+		}
+	}
+	parent.Folders[idx].Name = newName
 	return nil
 }
 
-// RemoveFolder deletes a folder and everything in it. A folder with sessions
-// in it is refused unless force is set — deleting a site by clicking the wrong
-// row should cost a confirmation, and the model is where that is enforced
-// rather than in whichever dialog happens to call it.
-func (t *Tree) RemoveFolder(name string, force bool) error {
-	i := t.FolderIndex(name)
-	if i < 0 {
-		return fmt.Errorf("no folder called %q", name)
+// RemoveFolder deletes a folder path and everything in it. A folder with
+// sessions or child folders is refused unless force is set.
+func (t *Tree) RemoveFolder(path string, force bool) error {
+	parts := SplitPath(path)
+	if len(parts) == 0 {
+		return fmt.Errorf("no folder called %q", path)
 	}
-	if n := len(t.Folders[i].Sessions); n > 0 && !force {
-		return fmt.Errorf("folder %q still has %d session(s)", t.Folders[i].Name, n)
+	if len(parts) == 1 {
+		i := t.FolderIndex(parts[0])
+		if i < 0 {
+			return fmt.Errorf("no folder called %q", path)
+		}
+		f := t.Folders[i]
+		n := f.CountSessions()
+		if (n > 0 || len(f.Folders) > 0) && !force {
+			return fmt.Errorf("folder %q still has %d session(s)", f.Name, n)
+		}
+		t.Folders = append(t.Folders[:i], t.Folders[i+1:]...)
+		return nil
 	}
-	t.Folders = append(t.Folders[:i], t.Folders[i+1:]...)
+	parentPath := JoinPath(parts[:len(parts)-1]...)
+	parent, err := t.FolderAt(parentPath)
+	if err != nil {
+		return fmt.Errorf("no folder called %q", path)
+	}
+	want := strings.ToLower(parts[len(parts)-1])
+	idx := -1
+	for i, c := range parent.Folders {
+		if strings.ToLower(strings.TrimSpace(c.Name)) == want {
+			idx = i
+			break
+		}
+	}
+	if idx < 0 {
+		return fmt.Errorf("no folder called %q", path)
+	}
+	f := parent.Folders[idx]
+	n := f.CountSessions()
+	if (n > 0 || len(f.Folders) > 0) && !force {
+		return fmt.Errorf("folder %q still has %d session(s)", f.Name, n)
+	}
+	parent.Folders = append(parent.Folders[:idx], parent.Folders[idx+1:]...)
 	return nil
 }
 
@@ -356,23 +467,20 @@ func (f Folder) SessionIndex(name string) int {
 	return -1
 }
 
-// Add puts a node in a folder, creating the folder if it is not there.
+// Add puts a node in a folder path, creating every missing folder along the way.
 func (t *Tree) Add(folder string, n Node) error {
 	n = n.Normalize()
 	if n.Label() == "" {
 		return fmt.Errorf("session needs a name or a host")
 	}
-	i := t.FolderIndex(folder)
-	if i < 0 {
-		if err := t.AddFolder(folder); err != nil {
-			return err
-		}
-		i = t.FolderIndex(folder)
+	f, err := t.EnsurePath(folder)
+	if err != nil {
+		return err
 	}
-	if t.Folders[i].SessionIndex(n.Label()) >= 0 {
-		return fmt.Errorf("%q already has a session called %q", t.Folders[i].Name, n.Label())
+	if f.SessionIndex(n.Label()) >= 0 {
+		return fmt.Errorf("%q already has a session called %q", folder, n.Label())
 	}
-	t.Folders[i].Sessions = append(t.Folders[i].Sessions, n)
+	f.Sessions = append(f.Sessions, n)
 	return nil
 }
 
@@ -380,11 +488,11 @@ func (t *Tree) Add(folder string, n Node) error {
 // Position is not decoration: an edit that moved the row to the bottom would
 // lose an ordering somebody chose.
 func (t *Tree) Replace(folder, name string, n Node) error {
-	i := t.FolderIndex(folder)
-	if i < 0 {
-		return fmt.Errorf("no folder called %q", folder)
+	f, err := t.FolderAt(folder)
+	if err != nil {
+		return err
 	}
-	j := t.Folders[i].SessionIndex(name)
+	j := f.SessionIndex(name)
 	if j < 0 {
 		return fmt.Errorf("no session called %q in %q", name, folder)
 	}
@@ -392,42 +500,41 @@ func (t *Tree) Replace(folder, name string, n Node) error {
 	if n.Label() == "" {
 		return fmt.Errorf("session needs a name or a host")
 	}
-	if k := t.Folders[i].SessionIndex(n.Label()); k >= 0 && k != j {
-		return fmt.Errorf("%q already has a session called %q", t.Folders[i].Name, n.Label())
+	if k := f.SessionIndex(n.Label()); k >= 0 && k != j {
+		return fmt.Errorf("%q already has a session called %q", folder, n.Label())
 	}
-	t.Folders[i].Sessions[j] = n
+	f.Sessions[j] = n
 	return nil
 }
 
 // Remove deletes one session.
 func (t *Tree) Remove(folder, name string) error {
-	i := t.FolderIndex(folder)
-	if i < 0 {
-		return fmt.Errorf("no folder called %q", folder)
+	f, err := t.FolderAt(folder)
+	if err != nil {
+		return err
 	}
-	j := t.Folders[i].SessionIndex(name)
+	j := f.SessionIndex(name)
 	if j < 0 {
 		return fmt.Errorf("no session called %q in %q", name, folder)
 	}
-	s := t.Folders[i].Sessions
-	t.Folders[i].Sessions = append(s[:j], s[j+1:]...)
+	f.Sessions = append(f.Sessions[:j], f.Sessions[j+1:]...)
 	return nil
 }
 
-// Move relocates a session between folders, keeping it identical.
+// Move relocates a session between folder paths, keeping it identical.
 func (t *Tree) Move(fromFolder, name, toFolder string) error {
-	i := t.FolderIndex(fromFolder)
-	if i < 0 {
-		return fmt.Errorf("no folder called %q", fromFolder)
+	from, err := t.FolderAt(fromFolder)
+	if err != nil {
+		return err
 	}
-	j := t.Folders[i].SessionIndex(name)
+	j := from.SessionIndex(name)
 	if j < 0 {
 		return fmt.Errorf("no session called %q in %q", name, fromFolder)
 	}
-	if t.FolderIndex(toFolder) == i {
+	if JoinPath(SplitPath(fromFolder)...) == JoinPath(SplitPath(toFolder)...) {
 		return nil
 	}
-	node := t.Folders[i].Sessions[j]
+	node := from.Sessions[j]
 	// Add first: if the destination refuses the name, the session is still
 	// where it was rather than gone.
 	if err := t.Add(toFolder, node); err != nil {
@@ -479,7 +586,7 @@ func (t *Tree) Import(folder string, nodes []Node) ImportResult {
 		}
 
 		want := n.Label()
-		if i := t.FolderIndex(folder); i >= 0 && t.Folders[i].SessionIndex(want) >= 0 {
+		if f, err := t.FolderAt(folder); err == nil && f.SessionIndex(want) >= 0 {
 			n.Name = want + " (" + n.Host + ")"
 			res.Renamed = append(res.Renamed, want)
 		}

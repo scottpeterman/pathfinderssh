@@ -243,3 +243,49 @@ func TestFoldersAreBranchesAndSessionsAreNot(t *testing.T) {
 		t.Error("an unknown uid is a branch")
 	}
 }
+
+func TestNestedBuildTreeView(t *testing.T) {
+	tr := sessions.Tree{}
+	_ = tr.Add("3_Customers/PBB/Juniper", node("AER01", "10.1.1.1"))
+	_ = tr.Add("3_Customers/PBB/Juniper", node("AER02", "10.1.1.2"))
+	_ = tr.AddFolder("3_Customers/PBB/Arista")
+
+	v := BuildTreeView(tr, "")
+	rootKids := v.Children[TreeRootUID]
+	if len(rootKids) != 1 || rootKids[0] != FolderUID("3_Customers") {
+		t.Fatalf("root kids %v", rootKids)
+	}
+	cust := v.Children[FolderUID("3_Customers")]
+	if len(cust) != 1 || cust[0] != FolderUID("3_Customers/PBB") {
+		t.Fatalf("customers kids %v", cust)
+	}
+	pbb := v.Children[FolderUID("3_Customers/PBB")]
+	if len(pbb) != 2 {
+		t.Fatalf("PBB kids %v", pbb)
+	}
+	jun := v.Children[FolderUID("3_Customers/PBB/Juniper")]
+	if len(jun) != 2 {
+		t.Fatalf("Juniper kids %v", jun)
+	}
+	if v.Matched != 2 {
+		t.Errorf("Matched=%d", v.Matched)
+	}
+}
+
+func TestNestedFilterOpensAncestors(t *testing.T) {
+	tr := sessions.Tree{}
+	_ = tr.Add("3_Customers/PBB/Juniper", node("AER01", "10.1.1.1"))
+	_ = tr.Add("Other/Site", node("core", "10.2.2.2"))
+
+	v := BuildTreeView(tr, "aer01")
+	if v.Matched != 1 {
+		t.Fatalf("Matched=%d", v.Matched)
+	}
+	if _, ok := v.Rows[FolderUID("Other")]; ok {
+		t.Error("Other should be filtered out")
+	}
+	exp := ExpandedFor(v, "aer01")
+	if len(exp) < 3 {
+		t.Fatalf("expected nested folders expanded, got %v", exp)
+	}
+}
