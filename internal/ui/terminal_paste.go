@@ -581,16 +581,27 @@ func (t *NativeTerminalWidget) ShowContextMenuAt(pos fyne.Position) {
 
 	items := []*fyne.MenuItem{copyItem, pasteItem, fyne.NewMenuItemSeparator(), selectAllItem, copyAllItem}
 
+	saveScroll := fyne.NewMenuItem("Save Scrollback…", t.menuAction(t.promptSaveScrollback))
+	if t.screen == nil || t.screen.GetTotalContentLines() <= 0 {
+		saveScroll.Disabled = true
+	}
+	items = append(items, saveScroll)
+
 	// Live logging toggle (only when the SSH widget injected the hooks)
 	if t.isLoggingFn != nil && t.toggleLoggingFn != nil {
-		label := "Start Logging"
+		label := "Start Capture"
 		if t.isLoggingFn() {
-			label = "Stop Logging"
+			label = "Stop Capture"
 		}
 		logItem := fyne.NewMenuItem(label, t.menuAction(func() {
 			on, msg := t.toggleLoggingFn()
-			if on && msg != "" {
-				dialog.ShowInformation("Session Logging", msg, win)
+			if msg != "" {
+				title := "Session Capture"
+				if on {
+					dialog.ShowInformation(title, msg, win)
+				} else {
+					dialog.ShowInformation(title, msg, win)
+				}
 			}
 		}))
 		items = append(items, fyne.NewMenuItemSeparator(), logItem)

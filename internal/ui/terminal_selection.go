@@ -88,9 +88,9 @@ func (sm *SelectionManager) HandleMouseUp(event *desktop.MouseEvent) bool {
 	// Real selection only if anchor and focus differ.
 	if sm.anchorAbsLine != sm.focusAbsLine || sm.anchorCol != sm.focusCol {
 		sm.hasSelection = true
-		if text := sm.GetSelectedText(); text != "" {
-			sm.CopyToClipboard()
-		}
+		// Do NOT auto-copy on mouse-up: Win32 clipboard SetContent can block
+		// the UI thread, and micro-drags on ordinary clicks triggered it.
+		// Copy is Ctrl+C / shortcut / explicit CopyToClipboard.
 		sm.terminal.updatePending.Store(true)
 	} else {
 		// Plain click - drop any prior selection.
@@ -356,11 +356,31 @@ func (sm *SelectionManager) normalized() (sRow, sCol, eRow, eCol int) {
 // viewportInfo returns the current virtual-scroll viewport plus the absolute
 // virtual-buffer line index of its top visible row. topAbs ties viewport-local
 // rows to absolute lines: visible row r == absolute line (topAbs + r).
+//
+// Intentionally avoids GetDisplay(): rebuilding the full buffer on every
+// mouse-down contended with the feed path on screen.mu and froze the UI.
 func (sm *SelectionManager) viewportInfo() (VirtualScrollState, int) {
 	t := sm.terminal
-	allLines := t.screen.GetDisplay()
-	vp := t.calculateUnifiedViewport(allLines)
-	topAbs := t.screen.GetViewportStart() + vp.scrollOffset
+	totalLines := 0
+	if t.screen != nil {
+		totalLines = t.screen.GetTotalContentLines()
+	}
+	if totalLines <= 0 {
+		totalLines = t.rows
+	}
+	var viewingHist bool
+	var pos, maxPos int
+	if t.screen != nil {
+		viewingHist = t.screen.IsViewingHistory()
+		if viewingHist {
+			pos, maxPos = t.screen.GetHistoryPos(), t.screen.GetMaxHistoryPos()
+		}
+	}
+	vp := t.calculateViewport(totalLines, viewingHist, pos, maxPos)
+	topAbs := 0
+	if t.screen != nil {
+		topAbs = t.screen.GetViewportStart() + vp.scrollOffset
+	}
 	return vp, topAbs
 }
 

@@ -116,6 +116,11 @@ type NativeTerminalWidget struct {
 	// test-and-clear without a mutex.
 	updatePending atomic.Bool
 
+	// remoteResize coalesces SSH WindowChange onto one background worker.
+	remoteCols     atomic.Int32
+	remoteRows     atomic.Int32
+	remoteResizeOn atomic.Bool
+
 	// Context for cancellation
 	ctx    context.Context
 	cancel context.CancelFunc

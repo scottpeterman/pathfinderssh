@@ -36,14 +36,9 @@ func (t *NativeTerminalWidget) TypedKey(key *fyne.KeyEvent) {
 		data = []byte("\x1b[6~")
 	case fyne.KeyBackspace:
 		data = []byte("\x7f")
-		// Force immediate update
-		t.updatePending.Store(true)
-		go func() {
-			time.Sleep(5 * time.Millisecond)
-			fyne.Do(func() {
-				t.performRedrawDirect()
-			})
-		}()
+		// Coalesce via updatePending — do NOT call performRedrawDirect on the
+		// UI path. That bypassed the in-flight paint guard and (when debug
+		// logging was heavy) froze the window after a few keypresses.
 	case fyne.KeyReturn:
 		// Exit history mode on Enter in normal mode
 		if t.screen != nil && !t.screen.IsUsingAlternate() && t.screen.IsViewingHistory() {
@@ -137,7 +132,6 @@ func (t *NativeTerminalWidget) TypedRune(r rune) {
 	if t.screen != nil && !t.screen.IsUsingAlternate() && t.screen.IsViewingHistory() {
 		dprintf("TypedRune: Exiting history mode on character input\n")
 		t.exitHistoryMode()
-		time.Sleep(10 * time.Millisecond)
 	}
 
 	var data []byte
@@ -168,17 +162,11 @@ func (t *NativeTerminalWidget) TypedRune(r rune) {
 	dprintf("========== TypedRune EXIT ==========\n")
 }
 
-// Fix 4: Immediate redraw trigger
+// Fix 4: Immediate redraw trigger — only mark dirty; the update processor
+// paints. Calling performRedrawDirect here stacked ungarded full paints on
+// the UI queue and made the terminal unresponsive.
 func (t *NativeTerminalWidget) triggerImmediateRedraw() {
-	// Use a goroutine to avoid blocking the input event
-	go func() {
-		// Small delay to ensure the PTY processes the data
-		time.Sleep(5 * time.Millisecond)
-
-		fyne.Do(func() {
-			t.performRedrawDirect()
-		})
-	}()
+	t.updatePending.Store(true)
 }
 
 // Fix 7: Enhanced focus handling
@@ -325,7 +313,7 @@ func (t *NativeTerminalWidget) handleResize(width, height float32) {
 		t.resizeTimer.Stop()
 	}
 
-	t.resizeTimer = time.AfterFunc(150*time.Millisecond, func() {
+	t.resizeTimer = time.AfterFunc(250*time.Millisecond, func() {
 		t.performResize(width, height)
 	})
 }
@@ -338,7 +326,7 @@ func (t *NativeTerminalWidget) performResize(width, height float32) {
 	needsResize := newCols != currentCols || newRows != currentRows
 
 	if needsResize {
-		log.Printf("performResize: from %dx%d to %dx%d (widget: %.1fx%.1f)",
+		dlogf("performResize: from %dx%d to %dx%d (widget: %.1fx%.1f)",
 			currentCols, currentRows, newCols, newRows, width, height)
 
 		// Update terminal dimensions
@@ -363,15 +351,38 @@ func (t *NativeTerminalWidget) performResize(width, height float32) {
 	t.mutex.Unlock()
 
 	if needsResize {
-		// The owning Session installs this; it pushes the new size at the
-		// far end. There is no local-pty fallback branch any more.
+		// Coalesce remote WindowChange onto one worker. Spawning a goroutine
+		// per debounce could pile up blocked SSH writes and freeze the UI
+		// when the user dragged the split with several sessions open.
 		if t.onResizeCallback != nil {
-			t.onResizeCallback(newCols, newRows)
+			t.scheduleRemoteResize(newCols, newRows)
 		}
-
-		// Force immediate redraw with new dimensions
 		t.updatePending.Store(true)
 	}
+}
+
+// scheduleRemoteResize queues cols/rows for the far end and ensures a single
+// worker is draining the latest size (SSH WindowChange can block).
+func (t *NativeTerminalWidget) scheduleRemoteResize(cols, rows int) {
+	t.remoteCols.Store(int32(cols))
+	t.remoteRows.Store(int32(rows))
+	if !t.remoteResizeOn.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer t.remoteResizeOn.Store(false)
+		for {
+			c := int(t.remoteCols.Load())
+			r := int(t.remoteRows.Load())
+			cb := t.onResizeCallback
+			if cb != nil {
+				cb(c, r)
+			}
+			if int(t.remoteCols.Load()) == c && int(t.remoteRows.Load()) == r {
+				return
+			}
+		}
+	}()
 }
 
 // SIZING AND UTILITY METHODS
@@ -437,7 +448,7 @@ func (t *NativeTerminalWidget) CalculateTerminalSize(width, height float32) (int
 		rows = 200
 	}
 
-	log.Printf("CalculateTerminalSize: window=%.1fx%.1f, measuredCell=%.2fx%.2f (fontSizeCell=%.2fx%.2f) -> %dx%d",
+	dlogf("CalculateTerminalSize: window=%.1fx%.1f, measuredCell=%.2fx%.2f (fontSizeCell=%.2fx%.2f) -> %dx%d",
 		width, height, cw, ch, t.charWidth, t.charHeight, cols, rows)
 	return cols, rows
 }
@@ -464,7 +475,7 @@ func absFloat32(x float32) float32 {
 // *** NEW: SetResizeCallback allows SSH widgets to receive resize events ***
 func (t *NativeTerminalWidget) SetResizeCallback(callback func(cols, rows int)) {
 	t.onResizeCallback = callback
-	log.Printf("SetResizeCallback: resize callback registered")
+	dlogf("SetResizeCallback: resize callback registered")
 }
 
 // cursorKey renders one of the six keys that have two encodings.
