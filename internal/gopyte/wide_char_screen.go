@@ -490,25 +490,18 @@ func (w *WideCharScreen) getProgressiveHistoryContent() []string {
 	return result
 }
 
-// Get recent context for normal typing mode
+// Get recent context for normal typing mode (live edge, not scrolled into history).
+//
+// Only the current screen is rendered here. An earlier version also rebuilt up
+// to 200 scrollback lines on every paint so a tiny flick of the wheel felt
+// instant — but every Feed (Enter echo, command output) invalidates the cache,
+// so that path ran on every keystroke and made Return feel like it hung for a
+// beat. Wheel scroll enters history mode and uses getProgressiveHistoryContent.
 func (w *WideCharScreen) getRecentContext() []string {
 	HistorySize := w.getHistorySizeLocked()
-
-	// In normal mode, show a reasonable amount of recent History
-	maxRecentHistory := 200 // Show up to 200 lines of recent History for immediate scroll-back
-
-	if HistorySize <= maxRecentHistory {
-		// Show all History + current screen
-		w.viewportStart = 0
-		w.viewportEnd = HistorySize + w.lines
-		return w.renderLinesInRange(0, HistorySize+w.lines)
-	} else {
-		// Show only recent History + current screen
-		recentStart := HistorySize - maxRecentHistory
-		w.viewportStart = recentStart
-		w.viewportEnd = HistorySize + w.lines
-		return w.renderLinesInRange(recentStart, HistorySize+w.lines)
-	}
+	w.viewportStart = HistorySize
+	w.viewportEnd = HistorySize + w.lines
+	return w.renderLinesInRange(HistorySize, HistorySize+w.lines)
 }
 
 func (w *WideCharScreen) renderLinesInRange(start, end int) []string {

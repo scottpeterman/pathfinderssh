@@ -159,6 +159,13 @@ func (s *RowStore) Advance() {
 }
 
 // trim drops rows that have fallen out of the scrollback budget.
+//
+// This MUST stay O(1) on the steady-state path. Once scrollback is full, every
+// linefeed calls Advance → trim. The previous implementation copied the entire
+// live+history slice on every call (O(scrollback)), so a "show running-config"
+// of tens of thousands of lines past the cap locked the UI for seconds under
+// the screen mutex. Reslicing drops the head in constant time; we only allocate
+// a compacting copy when the backing array has grown wastefully large.
 func (s *RowStore) trim() {
 	keep := s.base - s.max
 	if keep <= s.origin {
@@ -171,11 +178,21 @@ func (s *RowStore) trim() {
 	if drop <= 0 {
 		return
 	}
-	// Copy down rather than reslicing so the backing array does not grow
-	// without bound over a long session.
-	n := copy(s.rows, s.rows[drop:])
-	s.rows = s.rows[:n]
+	s.rows = s.rows[drop:]
 	s.origin += drop
+
+	// Compact only when the backing array is badly bloated. The previous
+	// threshold (3× live) fired during ordinary show-run / Enter bursts and
+	// copied the whole scrollback under the screen lock — felt like Return
+	// hanging every few dozen lines. 8× / 2×max keeps memory bounded without
+	// hitching on the hot Advance path.
+	live := len(s.rows)
+	waste := cap(s.rows) - live
+	if live > 0 && cap(s.rows) > live*8 && waste > s.max*2+s.lines {
+		fresh := make([]Row, live)
+		copy(fresh, s.rows)
+		s.rows = fresh
+	}
 }
 
 // ScrollRegion scrolls lines [top,bottom] of the live screen up by one,

@@ -60,9 +60,16 @@ func buildAuthMethods(cfg *Config) ([]ssh.AuthMethod, error) {
 		}
 	}
 
-	// 3. Password
+	// 3. Password — either a known secret, or a callback that asks once.
+	// Without the callback, servers that offer only "password" (not
+	// keyboard-interactive) never prompt when Password is empty, so Save
+	// password never runs and the session looks like it "won't save".
 	if cfg.Password != "" {
 		methods = append(methods, ssh.Password(cfg.Password))
+	} else if cfg.AuthPrompt != nil {
+		methods = append(methods, ssh.PasswordCallback(func() (string, error) {
+			return cfg.AuthPrompt("Password:", false)
+		}))
 	}
 
 	// 4. Keyboard-interactive — always present; handles MFA/RADIUS and
