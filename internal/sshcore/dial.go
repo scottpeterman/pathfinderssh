@@ -9,7 +9,9 @@
 package sshcore
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"time"
@@ -122,6 +124,11 @@ func Dial(cfg Config) (*Client, error) {
 		conn.Close()
 		if jumpClient != nil {
 			jumpClient.Close()
+		}
+		// EOF here is the classic "TCP connected, then the peer vanished"
+		// case — offline gear, wrong port, or a non-SSH listener.
+		if err == io.EOF || errors.Is(err, io.EOF) {
+			return nil, fmt.Errorf("SSH handshake with %s: host closed the connection (EOF) — usually offline, wrong port, or not an SSH service", addr)
 		}
 		return nil, fmt.Errorf("SSH handshake with %s: %w", addr, err)
 	}
